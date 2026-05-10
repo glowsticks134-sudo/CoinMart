@@ -1,45 +1,70 @@
-# [Project name]
+# CoinMart Discord Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A professional Discord bot for the CoinMart server with a secure code generation and redemption system, supporting role rewards, currency prizes, manual approvals, and full audit logging.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm --filter @workspace/coinmart-bot run dev` — start the bot (also what the workflow runs)
+- Required env secrets: `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- pnpm workspaces, Node.js 24, JavaScript (ESM)
+- Discord.js v14 with slash commands
+- sql.js (pure-JS SQLite, no native compilation needed)
+- Persistent database saved to `artifacts/coinmart-bot/data/coinmart.db`
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/coinmart-bot/src/index.js` — bot entry point, loads commands + events
+- `artifacts/coinmart-bot/src/commands/` — all slash commands
+- `artifacts/coinmart-bot/src/events/` — ready + interactionCreate handlers
+- `artifacts/coinmart-bot/src/lib/` — database, permissions, cooldowns, expiry, logging
+- `artifacts/coinmart-bot/data/coinmart.db` — SQLite database (auto-created)
+
+## Slash Commands
+
+| Command | Who can use | Description |
+|---|---|---|
+| `/generatecode` | Staff/Admin | Create a new redemption code with prize, uses, expiry |
+| `/claim` | Everyone | Redeem a COINMART- code |
+| `/codes` | Staff/Admin | List all active codes |
+| `/codeinfo` | Staff/Admin | Detailed info + claim history for a specific code |
+| `/deletecode` | Staff/Admin | Deactivate a code immediately |
+| `/approve` | Staff/Admin | Approve or deny a pending manual claim |
+| `/leaderboard` | Everyone | Top 10 claimers in the server |
+| `/config` | Admins only | Set admin role + log channel |
+
+## Prize Types
+
+- `currency` — coins/currency reward (text description)
+- `role` — automatically grants a Discord role on claim
+- `custom` — any custom text reward
+- `manual` — queued for staff approval via `/approve`
+
+## Security Features
+
+- Codes always start with `COINMART-` (format-validated on claim)
+- Duplicate claim prevention per user per code
+- Cooldowns: 10s on `/claim`, 5s on `/generatecode`
+- Permission check: Admin, ManageGuild, server owner, or configured admin role
+- Auto-expiry job runs every 60 seconds
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
-
-## Product
-
-_Describe the high-level user-facing capabilities of this app once they exist._
-
-## User preferences
-
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- sql.js chosen over better-sqlite3 because Replit's NixOS environment lacks the native build toolchain needed for gyp compilation
+- Database persisted to disk every 10 seconds + on process exit to balance performance with durability
+- Commands auto-deployed to Discord on bot ready event (global scope, ~1hr propagation on first deploy)
+- Single workflow `CoinMart Bot` runs the bot as a console process (no HTTP server)
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Global slash commands take up to 1 hour to propagate to all Discord servers after first deploy
+- If you add a new command file, the bot auto-redeploys commands on next restart
+- The `data/` directory is gitignored — database is ephemeral across Replit restarts unless you pin storage
 
-## Pointers
+## User preferences
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- Bot name: CoinMart
+- Code prefix: COINMART-
+- Embed colors: Green (success), Red (errors), Gold (generated codes)

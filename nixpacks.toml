@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = [
+  "npm install -g pnpm@10",
+  "pnpm install"
+]
+
+[start]
+cmd = "pnpm --filter @workspace/coinmart-bot run start"

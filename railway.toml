@@ -1,6 +1,5 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "pnpm install"
 
 [deploy]
 startCommand = "pnpm --filter @workspace/coinmart-bot run start"

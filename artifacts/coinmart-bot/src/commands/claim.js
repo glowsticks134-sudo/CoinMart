@@ -3,6 +3,17 @@ import { dbQuery } from "../lib/database.js";
 import { logAction, sendWebhookLog, buildLogEmbed } from "../lib/logger.js";
 import { checkCooldown, setCooldown } from "../lib/cooldown.js";
 
+const PRIZE_TYPE_ICONS = {
+  tiktok_followers:    "🎵",
+  twitch_followers:    "💜",
+  youtube_subscribers: "▶️",
+  discord_members:     "🟣",
+  discord_bots:        "🤖",
+  role:                "🎭",
+  manual:              "✏️",
+  custom:              "💬",
+};
+
 export default {
   data: new SlashCommandBuilder()
     .setName("claim")
@@ -133,12 +144,9 @@ export default {
       status
     );
 
-    dbQuery.run(
-      "UPDATE codes SET uses_left = uses_left - 1 WHERE code = ?",
-      rawCode
-    );
-
-    if (code.uses_left - 1 <= 0) {
+    const newUsesLeft = code.uses_left - 1;
+    dbQuery.run("UPDATE codes SET uses_left = uses_left - 1 WHERE code = ?", rawCode);
+    if (newUsesLeft <= 0) {
       dbQuery.run("UPDATE codes SET active = 0 WHERE code = ?", rawCode);
     }
 
@@ -159,28 +167,33 @@ export default {
       }
     }
 
+    const icon = PRIZE_TYPE_ICONS[code.prize_type] ?? "🎁";
+
     const pendingNote = code.requires_approval
-      ? "\n\n⏳ **Your claim is pending manual approval by staff.**"
+      ? "\n\n⏳ **Your claim is pending manual approval by staff.** You'll receive a DM when it's reviewed."
       : "";
 
+    const usesStr =
+      newUsesLeft > 0
+        ? `${newUsesLeft} use${newUsesLeft !== 1 ? "s" : ""} remaining`
+        : "Code fully redeemed";
+
     const embed = new EmbedBuilder()
-      .setColor(0x2ecc71)
+      .setColor(status === "approved" ? 0x2ecc71 : 0xffd700)
       .setTitle("✅ Reward Claimed!")
       .setDescription(`You have successfully redeemed a CoinMart code!${pendingNote}`)
       .addFields(
-        { name: "Prize", value: code.prize, inline: true },
-        { name: "Code", value: `\`${rawCode}\``, inline: true },
-        {
-          name: "Status",
-          value: status === "approved" ? "✅ Approved" : "⏳ Pending",
-          inline: true,
-        }
+        { name: `${icon} Prize`,       value: code.prize,                                      inline: false },
+        { name: "🔑 Code",             value: `\`${rawCode}\``,                                inline: true  },
+        { name: "📊 Status",           value: status === "approved" ? "✅ Approved" : "⏳ Pending", inline: true },
+        { name: "🎟️ Code Uses Left",  value: usesStr,                                          inline: true  }
       )
+      .setThumbnail(interaction.user.displayAvatarURL())
       .setFooter({ text: `CoinMart • ${interaction.user.tag}` })
       .setTimestamp();
 
     if (code.prize_type === "role" && code.role_id && !code.requires_approval) {
-      embed.addFields({ name: "Role Granted", value: `<@&${code.role_id}>`, inline: true });
+      embed.addFields({ name: "🎭 Role Granted", value: `<@&${code.role_id}>`, inline: true });
     }
 
     await interaction.editReply({ embeds: [embed] });
@@ -188,10 +201,10 @@ export default {
     const logEmbed = buildLogEmbed(
       "🎉 Code Claimed",
       [
-        { name: "Code", value: `\`${rawCode}\``, inline: true },
-        { name: "Prize", value: code.prize, inline: true },
-        { name: "User", value: `<@${interaction.user.id}>`, inline: true },
-        { name: "Status", value: status, inline: true },
+        { name: "Code",   value: `\`${rawCode}\``,               inline: true },
+        { name: "Prize",  value: code.prize,                      inline: true },
+        { name: "User",   value: `<@${interaction.user.id}>`,     inline: true },
+        { name: "Status", value: status,                          inline: true },
       ],
       0x2ecc71
     );

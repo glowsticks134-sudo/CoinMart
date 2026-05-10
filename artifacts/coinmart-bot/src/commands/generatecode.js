@@ -1,48 +1,83 @@
-import {
-  SlashCommandBuilder,
-  EmbedBuilder,
-} from "discord.js";
+import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
 import { dbQuery } from "../lib/database.js";
 import { generateCode } from "../lib/codegen.js";
 import { isAuthorized } from "../lib/permissions.js";
 import { logAction, sendWebhookLog, buildLogEmbed } from "../lib/logger.js";
 import { checkCooldown, setCooldown } from "../lib/cooldown.js";
 
+const ITEM_LABELS = {
+  tiktok_followers:    "TikTok Followers",
+  twitch_followers:    "Twitch Followers",
+  youtube_subscribers: "YouTube Subscribers",
+  discord_members:     "Discord Members",
+  discord_bots:        "Discord Bots",
+};
+
+const ITEM_EMOJIS = {
+  tiktok_followers:    "🎵",
+  twitch_followers:    "💜",
+  youtube_subscribers: "▶️",
+  discord_members:     "🟣",
+  discord_bots:        "🤖",
+};
+
 export default {
   data: new SlashCommandBuilder()
     .setName("generatecode")
     .setDescription("Generate a new CoinMart redemption code (Staff only)")
     .addStringOption((o) =>
-      o.setName("prize").setDescription("Prize/reward description").setRequired(true)
+      o
+        .setName("item")
+        .setDescription("What is being rewarded?")
+        .setRequired(true)
+        .addChoices(
+          { name: "🎵 TikTok Followers",    value: "tiktok_followers" },
+          { name: "💜 Twitch Followers",    value: "twitch_followers" },
+          { name: "▶️ YouTube Subscribers", value: "youtube_subscribers" },
+          { name: "🟣 Discord Members",     value: "discord_members" },
+          { name: "🤖 Discord Bots",        value: "discord_bots" }
+        )
+    )
+    .addIntegerOption((o) =>
+      o
+        .setName("amount")
+        .setDescription("How many? (e.g. 500)")
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(1000000)
     )
     .addStringOption((o) =>
       o
-        .setName("prize_type")
-        .setDescription("Type of prize")
+        .setName("delivery")
+        .setDescription("How is this prize delivered?")
         .setRequired(true)
         .addChoices(
-          { name: "Currency", value: "currency" },
-          { name: "Discord Role", value: "role" },
-          { name: "Custom Text", value: "custom" },
-          { name: "Manual Approval", value: "manual" }
+          { name: "🎭 Discord Role Grant",    value: "role" },
+          { name: "✏️ Manual Staff Approval", value: "manual" },
+          { name: "💬 Custom Instructions",   value: "custom" }
         )
     )
     .addIntegerOption((o) =>
       o
         .setName("max_uses")
-        .setDescription("How many times can this code be redeemed? (default: 1)")
+        .setDescription("How many members can redeem this code? (default: 1)")
         .setMinValue(1)
         .setMaxValue(1000)
     )
     .addIntegerOption((o) =>
       o
         .setName("expires_hours")
-        .setDescription("Expiry in hours from now (leave blank = never expires)")
+        .setDescription("Expire after how many hours? (leave blank = never)")
         .setMinValue(1)
         .setMaxValue(720)
     )
     .addRoleOption((o) =>
-      o.setName("role").setDescription("Role to grant (only for prize_type: role)")
+      o.setName("role").setDescription("Role to grant (only for delivery: Role Grant)")
+    )
+    .addStringOption((o) =>
+      o
+        .setName("instructions")
+        .setDescription("Custom delivery instructions shown to claimers")
     ),
 
   async execute(interaction) {
@@ -72,35 +107,43 @@ export default {
       });
     }
 
-    const prize = interaction.options.getString("prize");
-    const prizeType = interaction.options.getString("prize_type");
-    const maxUses = interaction.options.getInteger("max_uses") ?? 1;
+    const itemKey      = interaction.options.getString("item");
+    const amount       = interaction.options.getInteger("amount");
+    const delivery     = interaction.options.getString("delivery");
+    const maxUses      = interaction.options.getInteger("max_uses") ?? 1;
     const expiresHours = interaction.options.getInteger("expires_hours");
-    const roleOption = interaction.options.getRole("role");
+    const roleOption   = interaction.options.getRole("role");
+    const instructions = interaction.options.getString("instructions");
 
-    if (prizeType === "role" && !roleOption) {
+    if (delivery === "role" && !roleOption) {
       return interaction.reply({
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
             .setTitle("❌ Missing Role")
-            .setDescription("You must specify a role when prize type is **Role**."),
+            .setDescription("You must specify a role when delivery is **Role Grant**."),
         ],
         ephemeral: true,
       });
     }
 
+    const itemLabel = ITEM_LABELS[itemKey];
+    const itemEmoji = ITEM_EMOJIS[itemKey];
+    const prize = `${amount.toLocaleString()} ${itemLabel}`;
+
     const code = generateCode();
     const now = Math.floor(Date.now() / 1000);
     const expiresAt = expiresHours ? now + expiresHours * 3600 : null;
-    const requiresApproval = prizeType === "manual" ? 1 : 0;
+    const requiresApproval = delivery === "manual" ? 1 : 0;
+
+    const prizeWithInstructions = instructions ? `${prize} | ${instructions}` : prize;
 
     dbQuery.run(
       `INSERT INTO codes (code, prize, prize_type, role_id, creator_id, creator_name, guild_id, max_uses, uses_left, expires_at, requires_approval)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       code,
-      prize,
-      prizeType,
+      prizeWithInstructions,
+      delivery,
       roleOption?.id ?? null,
       interaction.user.id,
       interaction.user.tag,
@@ -117,42 +160,35 @@ export default {
       "CODE_GENERATED",
       interaction.user.id,
       interaction.user.tag,
-      `Code: ${code} | Prize: ${prize} | Uses: ${maxUses}`
+      `Code: ${code} | Item: ${prize} | Delivery: ${delivery} | Uses: ${maxUses}`
     );
 
-    const expiresStr = expiresAt
-      ? `<t:${expiresAt}:R> (<t:${expiresAt}:f>)`
-      : "Never";
+    const expiresStr = expiresAt ? `<t:${expiresAt}:R> (<t:${expiresAt}:f>)` : "Never";
+    const deliveryLabels = { role: "🎭 Role Grant", manual: "✏️ Manual Approval", custom: "💬 Custom" };
 
     const fields = [
-      { name: "Code", value: `\`${code}\``, inline: true },
-      { name: "Prize", value: prize, inline: true },
-      {
-        name: "Prize Type",
-        value: prizeType.charAt(0).toUpperCase() + prizeType.slice(1),
-        inline: true,
-      },
-      { name: "Max Uses", value: `${maxUses}`, inline: true },
-      { name: "Uses Left", value: `${maxUses}`, inline: true },
-      { name: "Expires", value: expiresStr, inline: true },
-      { name: "Created By", value: `<@${interaction.user.id}>`, inline: true },
-      {
-        name: "Requires Approval",
-        value: requiresApproval ? "Yes" : "No",
-        inline: true,
-      },
+      { name: "🔑 Code",       value: `\`\`\`${code}\`\`\``, inline: false },
+      { name: `${itemEmoji} Item`,   value: itemLabel, inline: true },
+      { name: "🔢 Amount",     value: amount.toLocaleString(), inline: true },
+      { name: "📦 Delivery",   value: deliveryLabels[delivery], inline: true },
+      { name: "👥 Max Uses",   value: `${maxUses}`, inline: true },
+      { name: "⏳ Expires",    value: expiresStr, inline: true },
+      { name: "👤 Created By", value: `<@${interaction.user.id}>`, inline: true },
     ];
 
     if (roleOption) {
-      fields.push({ name: "Role Reward", value: `<@&${roleOption.id}>`, inline: true });
+      fields.push({ name: "🎭 Role", value: `<@&${roleOption.id}>`, inline: true });
+    }
+    if (instructions) {
+      fields.push({ name: "📋 Instructions", value: instructions, inline: false });
     }
 
     const embed = new EmbedBuilder()
       .setColor(0xffd700)
       .setTitle("🎟️ CoinMart Code Generated")
-      .setDescription("A new redemption code has been created successfully.")
+      .setDescription(`A new redemption code for **${prize}** has been created!`)
       .addFields(fields)
-      .setFooter({ text: "CoinMart • Share this code with members" })
+      .setFooter({ text: "CoinMart • Share this code with your members" })
       .setTimestamp();
 
     await interaction.reply({ embeds: [embed] });
@@ -160,8 +196,8 @@ export default {
     const logEmbed = buildLogEmbed(
       "📋 Code Generated",
       [
-        { name: "Code", value: `\`${code}\``, inline: true },
-        { name: "Prize", value: prize, inline: true },
+        { name: "Code",  value: `\`${code}\``,               inline: true },
+        { name: "Prize", value: prize,                        inline: true },
         { name: "Staff", value: `<@${interaction.user.id}>`, inline: true },
       ],
       0xffd700

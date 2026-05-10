@@ -23,21 +23,34 @@ export default {
           new EmbedBuilder()
             .setColor(0xffd700)
             .setTitle("🏆 Claim Leaderboard")
-            .setDescription("No claims have been made yet."),
+            .setDescription(
+              "No claims have been made yet.\nBe the first to redeem a code with `/claim`!"
+            ),
         ],
       });
     }
 
     const medals = ["🥇", "🥈", "🥉"];
     const lines = rows.map((r, i) => {
-      const medal = medals[i] ?? `**${i + 1}.**`;
-      return `${medal} <@${r.user_id}> — **${r.total_claims}** claim${r.total_claims !== 1 ? "s" : ""}`;
+      const medal = medals[i] ?? `\`#${i + 1}\``;
+      const bar   = "█".repeat(Math.min(Math.ceil((r.total_claims / rows[0].total_claims) * 10), 10));
+      return `${medal} <@${r.user_id}>\n　\`${bar}\` **${r.total_claims}** claim${r.total_claims !== 1 ? "s" : ""}`;
     });
+
+    const totalClaims = dbQuery.get(
+      "SELECT COUNT(*) as c FROM claims WHERE guild_id = ? AND status != 'pending'",
+      interaction.guildId
+    );
 
     const embed = new EmbedBuilder()
       .setColor(0xffd700)
       .setTitle("🏆 CoinMart Claim Leaderboard")
-      .setDescription(lines.join("\n"))
+      .setDescription(lines.join("\n\n"))
+      .addFields({
+        name: "📊 Total Approved Claims",
+        value: `${totalClaims?.c ?? 0}`,
+        inline: true,
+      })
       .setFooter({ text: "CoinMart • Top 10 Claimers" })
       .setTimestamp();
 

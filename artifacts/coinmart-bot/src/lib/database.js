@@ -5,10 +5,16 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "fs";
 
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "../../data");
+
+// DB_PATH env var lets Railway (or any host) point to a persistent volume.
+// Falls back to the local data/ folder for development on Replit.
+const DATA_DIR = process.env.DB_PATH
+  ? process.env.DB_PATH
+  : join(__dirname, "../../data");
+
 mkdirSync(DATA_DIR, { recursive: true });
 
-const DB_PATH = join(DATA_DIR, "coinmart.db");
+const DB_FILE = join(DATA_DIR, "coinmart.db");
 
 const initSqlJs = require("sql.js");
 const SQL = await initSqlJs();
@@ -16,8 +22,8 @@ const SQL = await initSqlJs();
 let db;
 
 function loadDb() {
-  if (existsSync(DB_PATH)) {
-    const fileBuffer = readFileSync(DB_PATH);
+  if (existsSync(DB_FILE)) {
+    const fileBuffer = readFileSync(DB_FILE);
     db = new SQL.Database(fileBuffer);
   } else {
     db = new SQL.Database();
@@ -26,15 +32,15 @@ function loadDb() {
 
 function saveDb() {
   const data = db.export();
-  writeFileSync(DB_PATH, Buffer.from(data));
+  writeFileSync(DB_FILE, Buffer.from(data));
 }
 
 loadDb();
 
-// Save DB to disk every 10 seconds and on exit
+// Persist to disk every 10 seconds and on process exit
 setInterval(saveDb, 10_000);
-process.on("exit", saveDb);
-process.on("SIGINT", () => { saveDb(); process.exit(0); });
+process.on("exit",   saveDb);
+process.on("SIGINT",  () => { saveDb(); process.exit(0); });
 process.on("SIGTERM", () => { saveDb(); process.exit(0); });
 
 export function initDatabase() {
@@ -96,12 +102,10 @@ export function initDatabase() {
     )
   `);
   saveDb();
-  console.log("[CoinMart] Database initialized.");
+  console.log(`[CoinMart] Database ready at ${DB_FILE}`);
 }
 
-// Thin synchronous query helpers matching better-sqlite3 API shape
 export const dbQuery = {
-  /** Returns first row as object, or undefined */
   get(sql, ...params) {
     const stmt = db.prepare(sql);
     stmt.bind(params);
@@ -114,7 +118,6 @@ export const dbQuery = {
     return undefined;
   },
 
-  /** Returns all rows as array of objects */
   all(sql, ...params) {
     const results = [];
     const stmt = db.prepare(sql);
@@ -126,7 +129,6 @@ export const dbQuery = {
     return results;
   },
 
-  /** Runs a mutation, returns { changes } */
   run(sql, ...params) {
     db.run(sql, params);
     saveDb();

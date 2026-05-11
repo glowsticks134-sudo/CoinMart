@@ -11,9 +11,20 @@ export function isAuthorized(member, guildId) {
     guildId,
     "admin_role"
   );
+  if (row) return member.roles.cache.has(row.value);
+  return false;
+}
 
-  if (row) {
-    return member.roles.cache.has(row.value);
-  }
+export function isApprover(member, guildId) {
+  // Admins can always approve
+  if (isAuthorized(member, guildId)) return true;
+
+  // Check dedicated approver role
+  const row = dbQuery.get(
+    "SELECT value FROM config WHERE guild_id = ? AND key = ?",
+    guildId,
+    "approver_role"
+  );
+  if (row) return member.roles.cache.has(row.value);
   return false;
 }

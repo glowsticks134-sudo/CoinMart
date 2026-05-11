@@ -16,8 +16,16 @@ export default {
     )
     .addSubcommand((sub) =>
       sub
+        .setName("set_approver_role")
+        .setDescription("Set the role that can approve or deny manual claims")
+        .addRoleOption((o) =>
+          o.setName("role").setDescription("The approver role").setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
         .setName("set_log_channel")
-        .setDescription("Set the channel where all code activity is logged")
+        .setDescription("Set the channel where claim approval embeds are sent")
         .addChannelOption((o) =>
           o.setName("channel").setDescription("The log channel").setRequired(true)
         )
@@ -57,8 +65,28 @@ export default {
           new EmbedBuilder()
             .setColor(0x2ecc71)
             .setTitle("✅ Admin Role Set")
+            .setDescription(`Members with <@&${role.id}> can now generate and manage codes.`)
+            .setTimestamp(),
+        ],
+        ephemeral: true,
+      });
+    }
+
+    if (sub === "set_approver_role") {
+      const role = interaction.options.getRole("role");
+      dbQuery.run(
+        "INSERT OR REPLACE INTO config (guild_id, key, value) VALUES (?, ?, ?)",
+        interaction.guildId,
+        "approver_role",
+        role.id
+      );
+      return interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x2ecc71)
+            .setTitle("✅ Approver Role Set")
             .setDescription(
-              `Members with <@&${role.id}> can now generate and manage codes.`
+              `Members with <@&${role.id}> can now approve or deny manual claims using the buttons in the log channel.`
             )
             .setTimestamp(),
         ],
@@ -79,7 +107,9 @@ export default {
           new EmbedBuilder()
             .setColor(0x2ecc71)
             .setTitle("✅ Log Channel Set")
-            .setDescription(`All code activity will now be logged in <#${channel.id}>.`)
+            .setDescription(
+              `Claim approval embeds will be sent to <#${channel.id}>. Staff can approve or deny directly from there.`
+            )
             .setTimestamp(),
         ],
         ephemeral: true,
@@ -87,16 +117,10 @@ export default {
     }
 
     if (sub === "view") {
-      const adminRole = dbQuery.get(
-        "SELECT value FROM config WHERE guild_id = ? AND key = ?",
-        interaction.guildId,
-        "admin_role"
-      );
-      const logChannel = dbQuery.get(
-        "SELECT value FROM config WHERE guild_id = ? AND key = ?",
-        interaction.guildId,
-        "log_channel"
-      );
+      const adminRole    = dbQuery.get("SELECT value FROM config WHERE guild_id = ? AND key = ?", interaction.guildId, "admin_role");
+      const approverRole = dbQuery.get("SELECT value FROM config WHERE guild_id = ? AND key = ?", interaction.guildId, "approver_role");
+      const logChannel   = dbQuery.get("SELECT value FROM config WHERE guild_id = ? AND key = ?", interaction.guildId, "log_channel");
+
       return interaction.reply({
         embeds: [
           new EmbedBuilder()
@@ -104,14 +128,19 @@ export default {
             .setTitle("⚙️ CoinMart Configuration")
             .addFields(
               {
-                name: "Admin Role",
-                value: adminRole
-                  ? `<@&${adminRole.value}>`
-                  : "Not set (using server Admins)",
+                name: "🛡️ Admin Role",
+                value: adminRole ? `<@&${adminRole.value}>` : "Not set (server Admins only)",
                 inline: true,
               },
               {
-                name: "Log Channel",
+                name: "✅ Approver Role",
+                value: approverRole
+                  ? `<@&${approverRole.value}>`
+                  : "Not set (Admins only)",
+                inline: true,
+              },
+              {
+                name: "📋 Log Channel",
                 value: logChannel ? `<#${logChannel.value}>` : "Not set",
                 inline: true,
               }

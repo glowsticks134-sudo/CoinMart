@@ -1,17 +1,18 @@
-import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import {
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} from "discord.js";
 import { dbQuery } from "../lib/database.js";
-import { logAction, sendWebhookLog, buildLogEmbed } from "../lib/logger.js";
+import { logAction } from "../lib/logger.js";
 import { checkCooldown, setCooldown } from "../lib/cooldown.js";
 
 const PRIZE_TYPE_ICONS = {
-  tiktok_followers:    "🎵",
-  twitch_followers:    "💜",
-  youtube_subscribers: "▶️",
-  discord_members:     "🟣",
-  discord_bots:        "🤖",
-  role:                "🎭",
-  manual:              "✏️",
-  custom:              "💬",
+  role:   "🎭",
+  manual: "✏️",
+  custom: "💬",
 };
 
 export default {
@@ -48,9 +49,7 @@ export default {
           new EmbedBuilder()
             .setColor(0xe74c3c)
             .setTitle("❌ Invalid Code Format")
-            .setDescription(
-              "Codes must start with `COINMART-`. Please check your code and try again."
-            )
+            .setDescription("Codes must start with `COINMART-`. Please check your code and try again.")
             .setFooter({ text: "CoinMart Security" }),
         ],
         ephemeral: true,
@@ -83,8 +82,7 @@ export default {
           new EmbedBuilder()
             .setColor(0xe74c3c)
             .setTitle("❌ Code Expired or Deactivated")
-            .setDescription("This code is no longer active.")
-            .setFooter({ text: "CoinMart" }),
+            .setDescription("This code is no longer active."),
         ],
       });
     }
@@ -97,8 +95,7 @@ export default {
           new EmbedBuilder()
             .setColor(0xe74c3c)
             .setTitle("❌ Code Expired")
-            .setDescription("This code has expired and can no longer be redeemed.")
-            .setFooter({ text: "CoinMart" }),
+            .setDescription("This code has expired and can no longer be redeemed."),
         ],
       });
     }
@@ -109,8 +106,7 @@ export default {
           new EmbedBuilder()
             .setColor(0xe74c3c)
             .setTitle("❌ No Uses Remaining")
-            .setDescription("This code has been fully redeemed already.")
-            .setFooter({ text: "CoinMart" }),
+            .setDescription("This code has been fully redeemed already."),
         ],
       });
     }
@@ -159,6 +155,7 @@ export default {
       `Code: ${rawCode} | Prize: ${code.prize} | Status: ${status}`
     );
 
+    // --- Grant role immediately if not manual ---
     if (code.prize_type === "role" && code.role_id && !code.requires_approval) {
       try {
         await interaction.member.roles.add(code.role_id);
@@ -167,47 +164,99 @@ export default {
       }
     }
 
+    // --- Send approval embed with buttons to log channel ---
+    if (code.requires_approval) {
+      const logChannelRow = dbQuery.get(
+        "SELECT value FROM config WHERE guild_id = ? AND key = ?",
+        interaction.guildId,
+        "log_channel"
+      );
+
+      if (logChannelRow) {
+        try {
+          const logChannel = await interaction.client.channels.fetch(logChannelRow.value);
+          if (logChannel?.isTextBased()) {
+            const approvalEmbed = new EmbedBuilder()
+              .setColor(0xffd700)
+              .setTitle("📋 New Manual Claim — Approval Required")
+              .setDescription(`<@${interaction.user.id}> has claimed a code and is awaiting approval.`)
+              .addFields(
+                { name: "👤 User",      value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+                { name: "🔑 Code",      value: `\`${rawCode}\``,                                       inline: true },
+                { name: "🎁 Prize",     value: code.prize,                                              inline: false },
+                { name: "🕐 Claimed",   value: `<t:${now}:R>`,                                          inline: true },
+                { name: "🎟️ Uses Left", value: `${newUsesLeft}`,                                        inline: true }
+              )
+              .setThumbnail(interaction.user.displayAvatarURL())
+              .setFooter({ text: "CoinMart • Click a button below to approve or deny" })
+              .setTimestamp();
+
+            const approverRow = dbQuery.get(
+              "SELECT value FROM config WHERE guild_id = ? AND key = ?",
+              interaction.guildId,
+              "approver_role"
+            );
+            const roleMention = approverRow ? `<@&${approverRow.value}>` : null;
+
+            const row = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`coinmart_approve|${rawCode}|${interaction.user.id}`)
+                .setLabel("Approve")
+                .setEmoji("✅")
+                .setStyle(ButtonStyle.Success),
+              new ButtonBuilder()
+                .setCustomId(`coinmart_deny|${rawCode}|${interaction.user.id}`)
+                .setLabel("Deny")
+                .setEmoji("❌")
+                .setStyle(ButtonStyle.Danger)
+            );
+
+            await logChannel.send({
+              content: roleMention ? `${roleMention} — New claim needs review!` : null,
+              embeds: [approvalEmbed],
+              components: [row],
+            });
+          }
+        } catch (err) {
+          console.error("[CoinMart] Failed to send approval embed:", err);
+        }
+      }
+    }
+
+    // --- Reply to the claimer ---
     const icon = PRIZE_TYPE_ICONS[code.prize_type] ?? "🎁";
-
-    const pendingNote = code.requires_approval
-      ? "\n\n⏳ **Your claim is pending manual approval by staff.** You'll receive a DM when it's reviewed."
-      : "";
-
-    const usesStr =
-      newUsesLeft > 0
-        ? `${newUsesLeft} use${newUsesLeft !== 1 ? "s" : ""} remaining`
-        : "Code fully redeemed";
-
     const embed = new EmbedBuilder()
-      .setColor(status === "approved" ? 0x2ecc71 : 0xffd700)
-      .setTitle("✅ Reward Claimed!")
-      .setDescription(`You have successfully redeemed a CoinMart code!${pendingNote}`)
-      .addFields(
-        { name: `${icon} Prize`,       value: code.prize,                                      inline: false },
-        { name: "🔑 Code",             value: `\`${rawCode}\``,                                inline: true  },
-        { name: "📊 Status",           value: status === "approved" ? "✅ Approved" : "⏳ Pending", inline: true },
-        { name: "🎟️ Code Uses Left",  value: usesStr,                                          inline: true  }
-      )
       .setThumbnail(interaction.user.displayAvatarURL())
       .setFooter({ text: `CoinMart • ${interaction.user.tag}` })
       .setTimestamp();
 
-    if (code.prize_type === "role" && code.role_id && !code.requires_approval) {
-      embed.addFields({ name: "🎭 Role Granted", value: `<@&${code.role_id}>`, inline: true });
+    if (status === "pending") {
+      embed
+        .setColor(0xffd700)
+        .setTitle("⏳ Claim Submitted!")
+        .setDescription("Your claim has been submitted and is awaiting staff approval. You'll receive a DM once it's reviewed.")
+        .addFields(
+          { name: `${icon} Prize`, value: code.prize,         inline: false },
+          { name: "🔑 Code",       value: `\`${rawCode}\``,   inline: true  },
+          { name: "📊 Status",     value: "⏳ Pending Review", inline: true  }
+        );
+    } else {
+      embed
+        .setColor(0x2ecc71)
+        .setTitle("✅ Reward Claimed!")
+        .setDescription("You have successfully redeemed a CoinMart code!")
+        .addFields(
+          { name: `${icon} Prize`,      value: code.prize,       inline: false },
+          { name: "🔑 Code",            value: `\`${rawCode}\``, inline: true  },
+          { name: "📊 Status",          value: "✅ Approved",     inline: true  },
+          { name: "🎟️ Uses Left",       value: `${newUsesLeft}`,  inline: true  }
+        );
+
+      if (code.prize_type === "role" && code.role_id) {
+        embed.addFields({ name: "🎭 Role Granted", value: `<@&${code.role_id}>`, inline: true });
+      }
     }
 
     await interaction.editReply({ embeds: [embed] });
-
-    const logEmbed = buildLogEmbed(
-      "🎉 Code Claimed",
-      [
-        { name: "Code",   value: `\`${rawCode}\``,               inline: true },
-        { name: "Prize",  value: code.prize,                      inline: true },
-        { name: "User",   value: `<@${interaction.user.id}>`,     inline: true },
-        { name: "Status", value: status,                          inline: true },
-      ],
-      0x2ecc71
-    );
-    await sendWebhookLog(interaction.client, interaction.guildId, logEmbed);
   },
 };

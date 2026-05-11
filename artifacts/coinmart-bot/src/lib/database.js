@@ -6,8 +6,6 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "fs";
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// DB_PATH env var lets Railway (or any host) point to a persistent volume.
-// Falls back to the local data/ folder for development on Replit.
 const DATA_DIR = process.env.DB_PATH
   ? process.env.DB_PATH
   : join(__dirname, "../../data");
@@ -37,7 +35,6 @@ function saveDb() {
 
 loadDb();
 
-// Persist to disk every 10 seconds and on process exit
 setInterval(saveDb, 10_000);
 process.on("exit",   saveDb);
 process.on("SIGINT",  () => { saveDb(); process.exit(0); });
@@ -50,6 +47,7 @@ export function initDatabase() {
       code TEXT UNIQUE NOT NULL,
       prize TEXT NOT NULL,
       prize_type TEXT NOT NULL DEFAULT 'custom',
+      item_type TEXT,
       role_id TEXT,
       creator_id TEXT NOT NULL,
       creator_name TEXT NOT NULL,
@@ -62,6 +60,10 @@ export function initDatabase() {
       requires_approval INTEGER NOT NULL DEFAULT 0
     )
   `);
+
+  // Migration: add item_type column if it doesn't exist yet
+  try { db.run("ALTER TABLE codes ADD COLUMN item_type TEXT"); } catch {}
+
   db.run(`
     CREATE TABLE IF NOT EXISTS claims (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,9 +73,14 @@ export function initDatabase() {
       guild_id TEXT NOT NULL,
       claimed_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       status TEXT NOT NULL DEFAULT 'approved',
+      account_info TEXT,
       UNIQUE(code, user_id)
     )
   `);
+
+  // Migration: add account_info column if it doesn't exist yet
+  try { db.run("ALTER TABLE claims ADD COLUMN account_info TEXT"); } catch {}
+
   db.run(`
     CREATE TABLE IF NOT EXISTS logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,6 +108,7 @@ export function initDatabase() {
       PRIMARY KEY (guild_id, key)
     )
   `);
+
   saveDb();
   console.log(`[CoinMart] Database ready at ${DB_FILE}`);
 }

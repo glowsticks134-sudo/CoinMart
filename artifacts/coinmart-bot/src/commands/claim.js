@@ -1,19 +1,27 @@
 import {
   SlashCommandBuilder,
   EmbedBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
 } from "discord.js";
 import { dbQuery } from "../lib/database.js";
-import { logAction } from "../lib/logger.js";
 import { checkCooldown, setCooldown } from "../lib/cooldown.js";
+import { processClaim } from "../lib/claimProcessor.js";
 
-const PRIZE_TYPE_ICONS = {
-  role:   "🎭",
-  manual: "✏️",
-  custom: "💬",
+// Items that need the user's account/link before claiming
+const ACCOUNT_PROMPTS = {
+  tiktok_followers:    { label: "Your TikTok Username",           placeholder: "@yourusername or tiktok.com/@yourusername" },
+  twitch_followers:    { label: "Your Twitch Username",           placeholder: "yourusername or twitch.tv/yourusername" },
+  youtube_subscribers: { label: "Your YouTube Channel URL",       placeholder: "youtube.com/@yourchannel or channel URL" },
+  discord_members:     { label: "Your Discord Server Invite Link", placeholder: "discord.gg/yourserver" },
+  discord_bots:        { label: "Your Discord Server Invite Link", placeholder: "discord.gg/yourserver" },
 };
+
+export function needsAccountInfo(itemType) {
+  return itemType && Object.hasOwn(ACCOUNT_PROMPTS, itemType);
+}
 
 export default {
   data: new SlashCommandBuilder()
@@ -56,8 +64,7 @@ export default {
       });
     }
 
-    await interaction.deferReply({ ephemeral: true });
-
+    // Validate the code synchronously before showing modal or deferring
     const code = dbQuery.get(
       "SELECT * FROM codes WHERE code = ? AND guild_id = ?",
       rawCode,
@@ -65,7 +72,7 @@ export default {
     );
 
     if (!code) {
-      return interaction.editReply({
+      return interaction.reply({
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
@@ -73,41 +80,45 @@ export default {
             .setDescription("That code doesn't exist. Double-check and try again.")
             .setFooter({ text: "CoinMart Security" }),
         ],
+        ephemeral: true,
       });
     }
 
     if (!code.active) {
-      return interaction.editReply({
+      return interaction.reply({
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
             .setTitle("❌ Code Expired or Deactivated")
             .setDescription("This code is no longer active."),
         ],
+        ephemeral: true,
       });
     }
 
     const now = Math.floor(Date.now() / 1000);
     if (code.expires_at && code.expires_at <= now) {
       dbQuery.run("UPDATE codes SET active = 0 WHERE code = ?", rawCode);
-      return interaction.editReply({
+      return interaction.reply({
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
             .setTitle("❌ Code Expired")
             .setDescription("This code has expired and can no longer be redeemed."),
         ],
+        ephemeral: true,
       });
     }
 
     if (code.uses_left <= 0) {
-      return interaction.editReply({
+      return interaction.reply({
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
             .setTitle("❌ No Uses Remaining")
             .setDescription("This code has been fully redeemed already."),
         ],
+        ephemeral: true,
       });
     }
 
@@ -116,9 +127,8 @@ export default {
       rawCode,
       interaction.user.id
     );
-
     if (existing) {
-      return interaction.editReply({
+      return interaction.reply({
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
@@ -126,137 +136,80 @@ export default {
             .setDescription("You have already redeemed this code.")
             .setFooter({ text: "CoinMart Security" }),
         ],
+        ephemeral: true,
       });
     }
 
-    const status = code.requires_approval ? "pending" : "approved";
+    // --- Show modal if account info is required ---
+    if (needsAccountInfo(code.item_type)) {
+      const prompt = ACCOUNT_PROMPTS[code.item_type];
+      const modal = new ModalBuilder()
+        .setCustomId(`coinmart_claim_modal|${rawCode}`)
+        .setTitle("One more step…");
 
-    dbQuery.run(
-      "INSERT INTO claims (code, user_id, username, guild_id, status) VALUES (?, ?, ?, ?, ?)",
+      const input = new TextInputBuilder()
+        .setCustomId("account_info")
+        .setLabel(prompt.label)
+        .setPlaceholder(prompt.placeholder)
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(200);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      setCooldown(interaction.user.id, "claim");
+      return interaction.showModal(modal);
+    }
+
+    // --- No account info needed — process immediately ---
+    await interaction.deferReply({ ephemeral: true });
+
+    const { status, newUsesLeft } = await processClaim({
+      interaction,
+      code,
       rawCode,
-      interaction.user.id,
-      interaction.user.tag,
-      interaction.guildId,
-      status
-    );
+      claimer: interaction.user,
+      claimerMember: interaction.member,
+      accountInfo: null,
+    });
 
-    const newUsesLeft = code.uses_left - 1;
-    dbQuery.run("UPDATE codes SET uses_left = uses_left - 1 WHERE code = ?", rawCode);
-    if (newUsesLeft <= 0) {
-      dbQuery.run("UPDATE codes SET active = 0 WHERE code = ?", rawCode);
-    }
-
-    setCooldown(interaction.user.id, "claim");
-    logAction(
-      interaction.guildId,
-      "CODE_CLAIMED",
-      interaction.user.id,
-      interaction.user.tag,
-      `Code: ${rawCode} | Prize: ${code.prize} | Status: ${status}`
-    );
-
-    // --- Grant role immediately if not manual ---
-    if (code.prize_type === "role" && code.role_id && !code.requires_approval) {
-      try {
-        await interaction.member.roles.add(code.role_id);
-      } catch {
-        console.error(`[CoinMart] Failed to assign role ${code.role_id}`);
-      }
-    }
-
-    // --- Send approval embed with buttons to log channel ---
-    if (code.requires_approval) {
-      const logChannelRow = dbQuery.get(
-        "SELECT value FROM config WHERE guild_id = ? AND key = ?",
-        interaction.guildId,
-        "log_channel"
-      );
-
-      if (logChannelRow) {
-        try {
-          const logChannel = await interaction.client.channels.fetch(logChannelRow.value);
-          if (logChannel?.isTextBased()) {
-            const approvalEmbed = new EmbedBuilder()
-              .setColor(0xffd700)
-              .setTitle("📋 New Manual Claim — Approval Required")
-              .setDescription(`<@${interaction.user.id}> has claimed a code and is awaiting approval.`)
-              .addFields(
-                { name: "👤 User",      value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
-                { name: "🔑 Code",      value: `\`${rawCode}\``,                                       inline: true },
-                { name: "🎁 Prize",     value: code.prize,                                              inline: false },
-                { name: "🕐 Claimed",   value: `<t:${now}:R>`,                                          inline: true },
-                { name: "🎟️ Uses Left", value: `${newUsesLeft}`,                                        inline: true }
-              )
-              .setThumbnail(interaction.user.displayAvatarURL())
-              .setFooter({ text: "CoinMart • Click a button below to approve or deny" })
-              .setTimestamp();
-
-            const approverRow = dbQuery.get(
-              "SELECT value FROM config WHERE guild_id = ? AND key = ?",
-              interaction.guildId,
-              "approver_role"
-            );
-            const roleMention = approverRow ? `<@&${approverRow.value}>` : null;
-
-            const row = new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId(`coinmart_approve|${rawCode}|${interaction.user.id}`)
-                .setLabel("Approve")
-                .setEmoji("✅")
-                .setStyle(ButtonStyle.Success),
-              new ButtonBuilder()
-                .setCustomId(`coinmart_deny|${rawCode}|${interaction.user.id}`)
-                .setLabel("Deny")
-                .setEmoji("❌")
-                .setStyle(ButtonStyle.Danger)
-            );
-
-            await logChannel.send({
-              content: roleMention ? `${roleMention} — New claim needs review!` : null,
-              embeds: [approvalEmbed],
-              components: [row],
-            });
-          }
-        } catch (err) {
-          console.error("[CoinMart] Failed to send approval embed:", err);
-        }
-      }
-    }
-
-    // --- Reply to the claimer ---
-    const icon = PRIZE_TYPE_ICONS[code.prize_type] ?? "🎁";
-    const embed = new EmbedBuilder()
-      .setThumbnail(interaction.user.displayAvatarURL())
-      .setFooter({ text: `CoinMart • ${interaction.user.tag}` })
-      .setTimestamp();
-
-    if (status === "pending") {
-      embed
-        .setColor(0xffd700)
-        .setTitle("⏳ Claim Submitted!")
-        .setDescription("Your claim has been submitted and is awaiting staff approval. You'll receive a DM once it's reviewed.")
-        .addFields(
-          { name: `${icon} Prize`, value: code.prize,         inline: false },
-          { name: "🔑 Code",       value: `\`${rawCode}\``,   inline: true  },
-          { name: "📊 Status",     value: "⏳ Pending Review", inline: true  }
-        );
-    } else {
-      embed
-        .setColor(0x2ecc71)
-        .setTitle("✅ Reward Claimed!")
-        .setDescription("You have successfully redeemed a CoinMart code!")
-        .addFields(
-          { name: `${icon} Prize`,      value: code.prize,       inline: false },
-          { name: "🔑 Code",            value: `\`${rawCode}\``, inline: true  },
-          { name: "📊 Status",          value: "✅ Approved",     inline: true  },
-          { name: "🎟️ Uses Left",       value: `${newUsesLeft}`,  inline: true  }
-        );
-
-      if (code.prize_type === "role" && code.role_id) {
-        embed.addFields({ name: "🎭 Role Granted", value: `<@&${code.role_id}>`, inline: true });
-      }
-    }
-
+    const embed = buildClaimEmbed(interaction.user, code, rawCode, status, newUsesLeft, null);
     await interaction.editReply({ embeds: [embed] });
   },
 };
+
+export function buildClaimEmbed(user, code, rawCode, status, newUsesLeft, accountInfo) {
+  const embed = new EmbedBuilder()
+    .setThumbnail(user.displayAvatarURL())
+    .setFooter({ text: `CoinMart • ${user.tag}` })
+    .setTimestamp();
+
+  if (status === "pending") {
+    embed
+      .setColor(0xffd700)
+      .setTitle("⏳ Claim Submitted!")
+      .setDescription("Your claim has been submitted and is awaiting staff approval. You'll receive a DM once it's reviewed.")
+      .addFields(
+        { name: "🎁 Prize",   value: code.prize,         inline: false },
+        { name: "🔑 Code",    value: `\`${rawCode}\``,   inline: true  },
+        { name: "📊 Status",  value: "⏳ Pending Review", inline: true  }
+      );
+    if (accountInfo) {
+      embed.addFields({ name: "🔗 Account / Link Submitted", value: accountInfo, inline: false });
+    }
+  } else {
+    embed
+      .setColor(0x2ecc71)
+      .setTitle("✅ Reward Claimed!")
+      .setDescription("You have successfully redeemed a CoinMart code!")
+      .addFields(
+        { name: "🎁 Prize",        value: code.prize,       inline: false },
+        { name: "🔑 Code",         value: `\`${rawCode}\``, inline: true  },
+        { name: "📊 Status",       value: "✅ Approved",     inline: true  },
+        { name: "🎟️ Uses Left",   value: `${newUsesLeft}`,  inline: true  }
+      );
+    if (code.prize_type === "role" && code.role_id) {
+      embed.addFields({ name: "🎭 Role Granted", value: `<@&${code.role_id}>`, inline: true });
+    }
+  }
+  return embed;
+}

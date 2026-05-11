@@ -135,15 +135,15 @@ export default {
     const now = Math.floor(Date.now() / 1000);
     const expiresAt = expiresHours ? now + expiresHours * 3600 : null;
     const requiresApproval = delivery === "manual" ? 1 : 0;
-
-    const prizeWithInstructions = instructions ? `${prize} | ${instructions}` : prize;
+    const prizeStored = instructions ? `${prize} | ${instructions}` : prize;
 
     dbQuery.run(
-      `INSERT INTO codes (code, prize, prize_type, role_id, creator_id, creator_name, guild_id, max_uses, uses_left, expires_at, requires_approval)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO codes (code, prize, prize_type, item_type, role_id, creator_id, creator_name, guild_id, max_uses, uses_left, expires_at, requires_approval)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       code,
-      prizeWithInstructions,
+      prizeStored,
       delivery,
+      itemKey,
       roleOption?.id ?? null,
       interaction.user.id,
       interaction.user.tag,
@@ -168,20 +168,16 @@ export default {
 
     const fields = [
       { name: "🔑 Code",       value: `\`\`\`${code}\`\`\``, inline: false },
-      { name: `${itemEmoji} Item`,   value: itemLabel, inline: true },
+      { name: `${itemEmoji} Item`,   value: itemLabel,         inline: true },
       { name: "🔢 Amount",     value: amount.toLocaleString(), inline: true },
       { name: "📦 Delivery",   value: deliveryLabels[delivery], inline: true },
-      { name: "👥 Max Uses",   value: `${maxUses}`, inline: true },
-      { name: "⏳ Expires",    value: expiresStr, inline: true },
+      { name: "👥 Max Uses",   value: `${maxUses}`,            inline: true },
+      { name: "⏳ Expires",    value: expiresStr,               inline: true },
       { name: "👤 Created By", value: `<@${interaction.user.id}>`, inline: true },
     ];
 
-    if (roleOption) {
-      fields.push({ name: "🎭 Role", value: `<@&${roleOption.id}>`, inline: true });
-    }
-    if (instructions) {
-      fields.push({ name: "📋 Instructions", value: instructions, inline: false });
-    }
+    if (roleOption) fields.push({ name: "🎭 Role", value: `<@&${roleOption.id}>`, inline: true });
+    if (instructions) fields.push({ name: "📋 Instructions", value: instructions, inline: false });
 
     const embed = new EmbedBuilder()
       .setColor(0xffd700)
